@@ -5,14 +5,17 @@ from pydantic import BaseModel
 import pandas as pd
 import pickle
 from pathlib import Path
+
 from src.utils.exercise_generator import generate_exercise_plan
 from src.utils.meal_planner import generate_meal_plan
 
+# Logging setup
 logging.basicConfig(
-    level=logging.INFO, 
+    level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+# FastAPI app setup
 app = FastAPI()
 
 app.add_middleware(
@@ -23,9 +26,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Directory setup
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "src" / "data" / "models"
 
+# Input model
 class UserInput(BaseModel):
     age: int
     weight: float
@@ -34,91 +39,89 @@ class UserInput(BaseModel):
     activity_level: str
     goal: str
 
-models_cache = {}
-
+# Model loader
 def load_model(target):
-    """Lazy load models on demand."""
-    if target not in models_cache:
-        model_path = MODEL_DIR / f"{target}_model.pkl"
-        if not model_path.exists():
-            logging.error(f"Model file for {target} not found at {model_path}")
-            raise HTTPException(status_code=500, detail=f"Model file for {target} not found")
-        with open(model_path, 'rb') as f:
-            models_cache[target] = pickle.load(f)
-    return models_cache[target]
+    model_path = MODEL_DIR / f"{target}_model.pkl"
+    logging.info(f"Trying to load model from {model_path}")
+    if not model_path.exists():
+        logging.error(f"Model not found for {target} at {model_path}")
+        raise HTTPException(status_code=500, detail=f"Model file for {target} not found")
+    with open(model_path, "rb") as f:
+        return pickle.load(f)
 
+# Preprocessing pipeline loader
 def load_preprocessing():
-    """Lazy load the preprocessing pipeline."""
     preprocessing_path = MODEL_DIR / "preprocessing.pkl"
+    logging.info(f"Trying to load preprocessing from {preprocessing_path}")
     if not preprocessing_path.exists():
         logging.error(f"Preprocessing pipeline not found at {preprocessing_path}")
         raise HTTPException(status_code=500, detail="Preprocessing pipeline not found")
-    
-    with open(preprocessing_path, 'rb') as f:
+    with open(preprocessing_path, "rb") as f:
         return pickle.load(f)
 
+# Root route
 @app.get("/")
 def root():
     return {"message": "Hello from FastAPI"}
 
-@app.get("/health")
-def health_check():
-    """Health check to ensure the app is running."""
-    return {"status": "OK"}
+# Debug route to check model files
+@app.get("/debug-models")
+def debug_models():
+    try:
+        files = [f.name for f in MODEL_DIR.glob("*.pkl")]
+        return {"models_found": files}
+    except Exception as e:
+        logging.error(f"Error listing model files: {e}")
+        return {"error": str(e)}
 
+# Main POST route
 @app.post("/api/fitness-plan")
 async def get_fitness_plan(user_input: UserInput):
     logging.info("Received POST request at /api/fitness-plan")
     try:
+        # Load preprocessing
+        logging.info("Loading preprocessing pipeline...")
         preprocessing = load_preprocessing()
 
+        # Prepare input
         input_data = pd.DataFrame([user_input.dict()])
-        logging.debug(f"Input Data:\n{input_data}")
+        logging.debug(f"Input DataFrame:\n{input_data}")
 
-        try:
-            X_transformed = preprocessing.transform(input_data)
-        except Exception as e:
-            logging.error(f"Error during preprocessing transform: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed during preprocessing")
+        # Transform input
+        logging.info("Transforming input...")
+        X_transformed = preprocessing.transform(input_data)
 
-        try:
-            numeric_features = ['age', 'weight', 'height']
-            cat_features = ['gender', 'activity_level', 'goal']
-            encoder = preprocessing.transformers_[1][1].named_steps['encoder']
-            cat_feature_names = encoder.get_feature_names_out(cat_features)
-            all_feature_names = numeric_features + list(cat_feature_names)
-        except Exception as e:
-            logging.error(f"Error extracting feature names: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to extract feature names")
-
+        # Extract feature names
+        logging.info("Extracting feature names...")
+        numeric_features = ['age', 'weight', 'height']
+        cat_features = ['gender', 'activity_level', 'goal']
+        encoder = preprocessing.transformers_[1][1].named_steps['encoder']
+        cat_feature_names = encoder.get_feature_names_out(cat_features)
+        all_feature_names = numeric_features + list(cat_feature_names)
         X_input_df = pd.DataFrame(X_transformed, columns=all_feature_names)
 
+        # Predict
+        logging.info("Generating predictions...")
+        targets = ['target_calories', 'protein_ratio', 'carb_ratio', 'fat_ratio', 'exercise_intensity']
         predictions = {}
-        try:
-            for target in ['target_calories', 'protein_ratio', 'carb_ratio', 'fat_ratio', 'exercise_intensity']:
-                model = load_model(target)
-                predictions[target] = float(model.predict(X_input_df)[0])
-        except Exception as e:
-            logging.error(f"Prediction error: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Prediction failed")
+        for target in targets:
+            model = load_model(target)
+            predictions[target] = float(model.predict(X_input_df)[0])
+            logging.debug(f"{target} prediction: {predictions[target]}")
 
-        try:
-            exercise_plan = generate_exercise_plan(predictions['exercise_intensity'])
-        except Exception as e:
-            logging.error(f"Error in exercise plan generation: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to generate exercise plan")
+        # Generate plans
+        logging.info("Generating exercise plan...")
+        exercise_plan = generate_exercise_plan(predictions['exercise_intensity'])
 
-        try:
-            meal_plan = generate_meal_plan(
-                predictions['target_calories'],
-                predictions['protein_ratio'],
-                predictions['carb_ratio'],
-                predictions['fat_ratio']
-            )
-        except Exception as e:
-            logging.error(f"Error in meal plan generation: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to generate meal plan")
+        logging.info("Generating meal plan...")
+        meal_plan = generate_meal_plan(
+            predictions['target_calories'],
+            predictions['protein_ratio'],
+            predictions['carb_ratio'],
+            predictions['fat_ratio']
+        )
 
+        logging.info("Returning successful response.")
         return {
             "predictions": {
                 "target_calories": round(predictions['target_calories']),
@@ -132,7 +135,8 @@ async def get_fitness_plan(user_input: UserInput):
         }
 
     except HTTPException as http_exc:
+        logging.error(f"HTTPException: {http_exc.detail}", exc_info=True)
         raise http_exc
     except Exception as e:
-        logging.error(f"Unhandled error: {str(e)}", exc_info=True)
+        logging.error(f"Unhandled error in /api/fitness-plan: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal Server Error")
