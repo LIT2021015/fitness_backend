@@ -5,12 +5,11 @@ from pydantic import BaseModel
 import pandas as pd
 import pickle
 from pathlib import Path
-
 from src.utils.exercise_generator import generate_exercise_plan
 from src.utils.meal_planner import generate_meal_plan
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO, 
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
@@ -35,43 +34,43 @@ class UserInput(BaseModel):
     activity_level: str
     goal: str
 
-def load_models(model_dir=MODEL_DIR):
-    models = {}
-    targets = [
-        'target_calories', 'protein_ratio',
-        'carb_ratio', 'fat_ratio', 'exercise_intensity'
-    ]
+models_cache = {}
 
-    logging.debug(f"Looking for models in: {model_dir}")
-    logging.debug(f"Available model files: {[f.name for f in model_dir.glob('*.pkl')]}")
-
-    for target in targets:
-        model_path = model_dir / f"{target}_model.pkl"
+def load_model(target):
+    """Lazy load models on demand."""
+    if target not in models_cache:
+        model_path = MODEL_DIR / f"{target}_model.pkl"
         if not model_path.exists():
             logging.error(f"Model file for {target} not found at {model_path}")
             raise HTTPException(status_code=500, detail=f"Model file for {target} not found")
         with open(model_path, 'rb') as f:
-            models[target] = pickle.load(f)
+            models_cache[target] = pickle.load(f)
+    return models_cache[target]
 
-    preprocessing_path = model_dir / "preprocessing.pkl"
+def load_preprocessing():
+    """Lazy load the preprocessing pipeline."""
+    preprocessing_path = MODEL_DIR / "preprocessing.pkl"
     if not preprocessing_path.exists():
         logging.error(f"Preprocessing pipeline not found at {preprocessing_path}")
         raise HTTPException(status_code=500, detail="Preprocessing pipeline not found")
-
+    
     with open(preprocessing_path, 'rb') as f:
-        preprocessing = pickle.load(f)
-
-    return models, preprocessing
+        return pickle.load(f)
 
 @app.get("/")
 def root():
     return {"message": "Hello from FastAPI"}
 
+@app.get("/health")
+def health_check():
+    """Health check to ensure the app is running."""
+    return {"status": "OK"}
+
 @app.post("/api/fitness-plan")
 async def get_fitness_plan(user_input: UserInput):
     logging.info("Received POST request at /api/fitness-plan")
     try:
-        models, preprocessing = load_models()
+        preprocessing = load_preprocessing()
 
         input_data = pd.DataFrame([user_input.dict()])
         logging.debug(f"Input Data:\n{input_data}")
@@ -95,12 +94,13 @@ async def get_fitness_plan(user_input: UserInput):
         X_input_df = pd.DataFrame(X_transformed, columns=all_feature_names)
 
         predictions = {}
-        for target, model in models.items():
-            try:
+        try:
+            for target in ['target_calories', 'protein_ratio', 'carb_ratio', 'fat_ratio', 'exercise_intensity']:
+                model = load_model(target)
                 predictions[target] = float(model.predict(X_input_df)[0])
-            except Exception as e:
-                logging.error(f"Prediction error for {target}: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=f"Prediction failed for {target}")
+        except Exception as e:
+            logging.error(f"Prediction error: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Prediction failed")
 
         try:
             exercise_plan = generate_exercise_plan(predictions['exercise_intensity'])
