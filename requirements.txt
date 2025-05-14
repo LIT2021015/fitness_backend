@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+pandas
+scikit-learn==1.5.2
+numpy==1.26.4
+pandas==2.2.2
+pyarrow==15.0.2
