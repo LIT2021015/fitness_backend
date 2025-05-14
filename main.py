@@ -9,15 +9,12 @@ from pathlib import Path
 from src.utils.exercise_generator import generate_exercise_plan
 from src.utils.meal_planner import generate_meal_plan
 
-# Setup logging
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Initialize FastAPI app
 app = FastAPI()
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,11 +24,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Base path
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "src" / "data" / "models"
 
-# Input schema
 class UserInput(BaseModel):
     age: int
     weight: float
@@ -40,13 +35,15 @@ class UserInput(BaseModel):
     activity_level: str
     goal: str
 
-# Load models and preprocessing
 def load_models(model_dir=MODEL_DIR):
     models = {}
     targets = [
         'target_calories', 'protein_ratio',
         'carb_ratio', 'fat_ratio', 'exercise_intensity'
     ]
+
+    logging.debug(f"Looking for models in: {model_dir}")
+    logging.debug(f"Available model files: {[f.name for f in model_dir.glob('*.pkl')]}")
 
     for target in targets:
         model_path = model_dir / f"{target}_model.pkl"
@@ -85,7 +82,6 @@ async def get_fitness_plan(user_input: UserInput):
             logging.error(f"Error during preprocessing transform: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="Failed during preprocessing")
 
-        # Extract feature names
         try:
             numeric_features = ['age', 'weight', 'height']
             cat_features = ['gender', 'activity_level', 'goal']
@@ -98,7 +94,6 @@ async def get_fitness_plan(user_input: UserInput):
 
         X_input_df = pd.DataFrame(X_transformed, columns=all_feature_names)
 
-        # Make predictions
         predictions = {}
         for target, model in models.items():
             try:
@@ -107,7 +102,6 @@ async def get_fitness_plan(user_input: UserInput):
                 logging.error(f"Prediction error for {target}: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"Prediction failed for {target}")
 
-        # Generate plans
         try:
             exercise_plan = generate_exercise_plan(predictions['exercise_intensity'])
         except Exception as e:
@@ -142,5 +136,3 @@ async def get_fitness_plan(user_input: UserInput):
     except Exception as e:
         logging.error(f"Unhandled error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal Server Error")
-
-
